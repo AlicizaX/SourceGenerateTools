@@ -126,14 +126,15 @@ public class UIMetaSourceGenerator : ISourceGenerator
 
             if (attribute != null)
             {
-                var layer = (UILayerTest)(attribute.ConstructorArguments[0].Value ?? UILayerTest.UI);
-                var fullScreen = (bool)(attribute.ConstructorArguments[1].Value ?? false);
-                var cacheTime = (int)(attribute.ConstructorArguments[2].Value ?? 0);
+                var args = attribute.ConstructorArguments;
+                var layer = args.Length > 0 ? (UILayerTest)(args[0].Value ?? UILayerTest.UI) : UILayerTest.UI;
+                var occlusionMode = args.Length > 1 ? (UIOcclusionModeTest)(args[1].Value ?? UIOcclusionModeTest.None) : UIOcclusionModeTest.None;
+                var cacheTime = args.Length > 2 ? (int)(args[2].Value ?? 0) : 0;
 
                 builder.Append($"UIMetaRegistry.Register(typeof({classType}), ")
                     .Append($"typeof({holderTypeName}), ")
                     .Append($"UILayer.{layer}, ")
-                    .Append($"{fullScreen.ToString().ToLower()}, ")
+                    .Append($"UIOcclusionMode.{occlusionMode}, ")
                     .Append($"{cacheTime}, ")
                     .Append($"{(updateAttribute != null).ToString().ToLower()});");
             }
