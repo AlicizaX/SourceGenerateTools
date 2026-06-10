@@ -127,9 +127,9 @@ public class UIMetaSourceGenerator : ISourceGenerator
             if (attribute != null)
             {
                 var args = attribute.ConstructorArguments;
-                var layer = args.Length > 0 ? (UILayerTest)(args[0].Value ?? UILayerTest.UI) : UILayerTest.UI;
-                var occlusionMode = args.Length > 1 ? (UIOcclusionModeTest)(args[1].Value ?? UIOcclusionModeTest.None) : UIOcclusionModeTest.None;
-                var cacheTime = args.Length > 2 ? (int)(args[2].Value ?? 0) : 0;
+                var layer = args.Length > 0 ? ReadLayerArgument(args[0].Value, UILayerTest.UI) : UILayerTest.UI;
+                var occlusionMode = args.Length > 1 ? ReadOcclusionModeArgument(args[1].Value, UIOcclusionModeTest.None) : UIOcclusionModeTest.None;
+                var cacheTime = args.Length > 2 ? ReadIntArgument(args[2].Value, 0) : 0;
 
                 builder.Append($"UIMetaRegistry.Register(typeof({classType}), ")
                     .Append($"typeof({holderTypeName}), ")
@@ -149,6 +149,21 @@ public class UIMetaSourceGenerator : ISourceGenerator
         }
 
         return builder.ToString();
+    }
+
+    private static UILayerTest ReadLayerArgument(object? value, UILayerTest fallback)
+    {
+        return value == null ? fallback : (UILayerTest)Convert.ToInt32(value);
+    }
+
+    private static UIOcclusionModeTest ReadOcclusionModeArgument(object? value, UIOcclusionModeTest fallback)
+    {
+        return value == null ? fallback : (UIOcclusionModeTest)Convert.ToInt32(value);
+    }
+
+    private static int ReadIntArgument(object? value, int fallback)
+    {
+        return value == null ? fallback : Convert.ToInt32(value);
     }
 
     private void GenerateSourceFile(GeneratorExecutionContext context, IEnumerable<string> registrations)
