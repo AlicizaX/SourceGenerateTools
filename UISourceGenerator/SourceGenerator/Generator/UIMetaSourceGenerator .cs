@@ -128,13 +128,11 @@ public class UIMetaSourceGenerator : ISourceGenerator
             {
                 var args = attribute.ConstructorArguments;
                 var layer = args.Length > 0 ? ReadLayerArgument(args[0].Value, UILayerTest.UI) : UILayerTest.UI;
-                var occlusionMode = args.Length > 1 ? ReadOcclusionModeArgument(args[1].Value, UIOcclusionModeTest.None) : UIOcclusionModeTest.None;
-                var cacheTime = args.Length > 2 ? ReadIntArgument(args[2].Value, 0) : 0;
+                var cacheTime = args.Length > 1 ? ReadIntArgument(args[1].Value, 0) : 0;
 
                 builder.Append($"UIMetaRegistry.Register(typeof({classType}), ")
                     .Append($"typeof({holderTypeName}), ")
                     .Append($"UILayer.{layer}, ")
-                    .Append($"UIOcclusionMode.{occlusionMode}, ")
                     .Append($"{cacheTime}, ")
                     .Append($"{(updateAttribute != null).ToString().ToLower()});");
             }
@@ -154,11 +152,6 @@ public class UIMetaSourceGenerator : ISourceGenerator
     private static UILayerTest ReadLayerArgument(object? value, UILayerTest fallback)
     {
         return value == null ? fallback : (UILayerTest)Convert.ToInt32(value);
-    }
-
-    private static UIOcclusionModeTest ReadOcclusionModeArgument(object? value, UIOcclusionModeTest fallback)
-    {
-        return value == null ? fallback : (UIOcclusionModeTest)Convert.ToInt32(value);
     }
 
     private static int ReadIntArgument(object? value, int fallback)

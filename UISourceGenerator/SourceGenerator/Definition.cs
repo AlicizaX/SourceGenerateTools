@@ -44,10 +44,3 @@ internal enum EUIResLoadTypeTest : byte
     Resources,
     AssetBundle
 }
-
-internal enum UIOcclusionModeTest : byte
-{
-    None,
-    Visible,
-    Lifecycle,
-}
