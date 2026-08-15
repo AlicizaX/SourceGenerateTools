@@ -143,7 +143,10 @@ public class UIMetaSourceGenerator : ISourceGenerator
         }
         else
         {
-            builder.Append($"UIMetaRegistry.Register(typeof({classType}), typeof({holderTypeName}));");
+            var updateAttribute = classSymbol.GetAttributes()
+                .FirstOrDefault(a => a.AttributeClass?.Equals(uiUpdateAttribute, SymbolEqualityComparer.Default) == true);
+            builder.Append($"UIMetaRegistry.Register(typeof({classType}), typeof({holderTypeName}), ")
+                .Append($"UILayer.UI, 0, {(updateAttribute != null).ToString().ToLower()});");
         }
 
         return builder.ToString();
