@@ -38,10 +38,13 @@ public class UIMetaSourceGenerator : ISourceGenerator
             var isWindowType = isValidWindow || isValidTabWindow;
             if (!isWindowType && !isValidWidget) return;
 
+            // Intermediate bases such as GameUIWindow<T> / GameUIWidget<T> are only used for inheritance.
+            if (classSymbol.IsAbstract) return;
+
             var targetBaseType = isWindowType ? (isValidWindow ? uiWindowType : uiTabWindowType) : uiWidgetType;
             var holderType = GetHolderType(classSymbol, targetBaseType);
 
-            if (holderType.IsGenericType)
+            if (IsOpenGeneric(holderType) || IsOpenGeneric(classSymbol))
             {
                 context.ReportDiagnostic(Diagnostic.Create(
                     new DiagnosticDescriptor(
@@ -107,6 +110,11 @@ public class UIMetaSourceGenerator : ISourceGenerator
         }
 
         return classSymbol;
+    }
+
+    private static bool IsOpenGeneric(INamedTypeSymbol type)
+    {
+        return type.IsGenericType && type.TypeArguments.Any(argument => argument.TypeKind == TypeKind.TypeParameter);
     }
 
     private string BuildRegistrationCode(GeneratorExecutionContext context,
@@ -201,19 +209,7 @@ namespace AlicizaX.UI.Runtime
         {
             if (syntaxNode is ClassDeclarationSyntax { BaseList: not null } classDecl)
             {
-                foreach (var baseType in classDecl.BaseList.Types)
-                {
-                    // 添加UITabWindow语法过滤
-                    if (baseType.Type is GenericNameSyntax genericName &&
-                        (genericName.Identifier.ValueText == "UIWindow" ||
-                         genericName.Identifier.ValueText == "UIWidget" ||
-                         genericName.Identifier.ValueText == "UITabWindow") &&
-                        genericName.TypeArgumentList?.Arguments.Count == 1)
-                    {
-                        CandidateClasses.Add(classDecl);
-                        break;
-                    }
-                }
+                CandidateClasses.Add(classDecl);
             }
         }
     }

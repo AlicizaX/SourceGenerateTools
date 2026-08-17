@@ -37,6 +37,8 @@ namespace AlicizaX.UI.Runtime
             if (model.GetDeclaredSymbol(classDecl) is not INamedTypeSymbol classSymbol) continue;
 
             if (!classSymbol.IsDerivedFrom(uiHolderType)) continue;
+            if (classSymbol.IsAbstract) continue;
+            if (classSymbol.IsGenericType && classSymbol.TypeArguments.Any(argument => argument.TypeKind == TypeKind.TypeParameter)) continue;
 
             var attribute = classSymbol.GetAttributes()
                 .FirstOrDefault(a => a.AttributeClass?.Equals(uiResAttribute, SymbolEqualityComparer.Default) == true);
@@ -89,10 +91,7 @@ namespace AlicizaX.UI.Runtime
         {
             if (syntaxNode is ClassDeclarationSyntax { BaseList: not null } classDecl)
             {
-                if (classDecl.BaseList.Types.Any(t => t.Type.ToString().Contains("UIHolderObjectBase")))
-                {
-                    CandidateClasses.Add(classDecl);
-                }
+                CandidateClasses.Add(classDecl);
             }
         }
     }
