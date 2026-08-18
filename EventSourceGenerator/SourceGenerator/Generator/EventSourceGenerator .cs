@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
@@ -9,7 +8,7 @@ using Microsoft.CodeAnalysis.Text;
 namespace AlicizaX.Event.SourceGenerators
 {
     [Generator]
-    public sealed class EventGenerator : IIncrementalGenerator
+    public sealed class EventGenerator : ISourceGenerator
     {
         private static readonly DiagnosticDescriptor OpenGenericPrewarm = new DiagnosticDescriptor(
             id: "EVT001",
@@ -51,19 +50,29 @@ namespace AlicizaX.Event.SourceGenerators
             defaultSeverity: DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
 
-        public void Initialize(IncrementalGeneratorInitializationContext context)
+        public void Initialize(GeneratorInitializationContext context)
         {
-            IncrementalValuesProvider<EventScanResult> events = context.SyntaxProvider
-                .CreateSyntaxProvider(
-                    static (node, _) => IsCandidate(node),
-                    static (ctx, _) => Scan(ctx))
-                .Where(static result => result.HasValue)
-                .Select(static (result, _) => result.Value);
+            context.RegisterForSyntaxNotifications(() => new SyntaxReceiver());
+        }
 
-            context.RegisterSourceOutput(events.Collect().Combine(context.CompilationProvider), static (spc, source) =>
+        public void Execute(GeneratorExecutionContext context)
+        {
+            if (context.SyntaxReceiver is not SyntaxReceiver receiver)
             {
-                Emit(spc, source.Right, source.Left);
-            });
+                return;
+            }
+
+            List<EventScanResult> results = new List<EventScanResult>();
+            foreach (StructDeclarationSyntax structDecl in receiver.Candidates)
+            {
+                EventScanResult? result = Scan(context.Compilation.GetSemanticModel(structDecl.SyntaxTree), structDecl);
+                if (result.HasValue)
+                {
+                    results.Add(result.Value);
+                }
+            }
+
+            Emit(context, context.Compilation, results);
         }
 
         private static bool IsCandidate(SyntaxNode node)
@@ -109,21 +118,16 @@ namespace AlicizaX.Event.SourceGenerators
             };
         }
 
-        private static EventScanResult? Scan(GeneratorSyntaxContext context)
+        private static EventScanResult? Scan(SemanticModel semanticModel, StructDeclarationSyntax structDecl)
         {
-            if (context.Node is not StructDeclarationSyntax structDecl)
+            if (semanticModel.GetDeclaredSymbol(structDecl) is not INamedTypeSymbol symbol)
             {
                 return null;
             }
 
-            if (context.SemanticModel.GetDeclaredSymbol(structDecl) is not INamedTypeSymbol symbol)
-            {
-                return null;
-            }
-
-            INamedTypeSymbol payloadArgs = context.SemanticModel.Compilation.GetTypeByMetadataName("AlicizaX.IPayloadEventArgs");
-            INamedTypeSymbol emptyArgs = context.SemanticModel.Compilation.GetTypeByMetadataName("AlicizaX.IEmptyEventArgs");
-            INamedTypeSymbol prewarmAttribute = context.SemanticModel.Compilation.GetTypeByMetadataName("AlicizaX.PrewarmAttribute");
+            INamedTypeSymbol payloadArgs = semanticModel.Compilation.GetTypeByMetadataName("AlicizaX.IPayloadEventArgs");
+            INamedTypeSymbol emptyArgs = semanticModel.Compilation.GetTypeByMetadataName("AlicizaX.IEmptyEventArgs");
+            INamedTypeSymbol prewarmAttribute = semanticModel.Compilation.GetTypeByMetadataName("AlicizaX.PrewarmAttribute");
             if (prewarmAttribute == null || (payloadArgs == null && emptyArgs == null))
             {
                 return null;
@@ -199,9 +203,9 @@ namespace AlicizaX.Event.SourceGenerators
             return symbol.IsGenericType && symbol.TypeArguments.Any(argument => argument.TypeKind == TypeKind.TypeParameter);
         }
 
-        private static void Emit(SourceProductionContext context, Compilation compilation, ImmutableArray<EventScanResult> results)
+        private static void Emit(GeneratorExecutionContext context, Compilation compilation, List<EventScanResult> results)
         {
-            if (results.IsDefaultOrEmpty)
+            if (results.Count == 0)
             {
                 return;
             }
@@ -337,6 +341,19 @@ namespace AlicizaX.Event.SourceGenerators
             internal bool IsEmpty { get; }
             internal bool HasInstanceFields { get; }
             internal bool IsOpenGeneric { get; }
+        }
+
+        private sealed class SyntaxReceiver : ISyntaxReceiver
+        {
+            internal List<StructDeclarationSyntax> Candidates { get; } = new List<StructDeclarationSyntax>();
+
+            public void OnVisitSyntaxNode(SyntaxNode syntaxNode)
+            {
+                if (IsCandidate(syntaxNode) && syntaxNode is StructDeclarationSyntax structDecl)
+                {
+                    Candidates.Add(structDecl);
+                }
+            }
         }
     }
 }
