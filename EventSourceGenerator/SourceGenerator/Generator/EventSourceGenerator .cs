@@ -57,6 +57,12 @@ namespace AlicizaX.Event.SourceGenerators
 
         public void Execute(GeneratorExecutionContext context)
         {
+            INamedTypeSymbol eventBus = context.Compilation.GetTypeByMetadataName("AlicizaX.EventBus");
+            if (eventBus != null && SymbolEqualityComparer.Default.Equals(eventBus.ContainingAssembly, context.Compilation.Assembly))
+            {
+                context.AddSource("EventBus.Publish.g.cs", SourceText.From(GeneratePublish(), Encoding.UTF8));
+            }
+
             if (context.SyntaxReceiver is not SyntaxReceiver receiver)
             {
                 return;
@@ -77,45 +83,8 @@ namespace AlicizaX.Event.SourceGenerators
 
         private static bool IsCandidate(SyntaxNode node)
         {
-            if (node is not StructDeclarationSyntax structDecl || structDecl.BaseList == null)
-            {
-                return false;
-            }
-
-            foreach (BaseTypeSyntax baseType in structDecl.BaseList.Types)
-            {
-                string name = GetSimpleName(baseType.Type);
-                if (name is "IPayloadEventArgs" or "IEmptyEventArgs")
-                {
-                    return true;
-                }
-            }
-
-            foreach (AttributeListSyntax attributeList in structDecl.AttributeLists)
-            {
-                foreach (AttributeSyntax attribute in attributeList.Attributes)
-                {
-                    string name = GetSimpleName(attribute.Name);
-                    if (name is "Prewarm" or "PrewarmAttribute")
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        }
-
-        private static string GetSimpleName(TypeSyntax type)
-        {
-            return type switch
-            {
-                IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
-                QualifiedNameSyntax qualified => qualified.Right.Identifier.ValueText,
-                AliasQualifiedNameSyntax alias => alias.Name.Identifier.ValueText,
-                GenericNameSyntax generic => generic.Identifier.ValueText,
-                _ => string.Empty
-            };
+            return node is StructDeclarationSyntax structDecl &&
+                   (structDecl.BaseList != null || structDecl.AttributeLists.Count != 0);
         }
 
         private static EventScanResult? Scan(SemanticModel semanticModel, StructDeclarationSyntax structDecl)
@@ -200,7 +169,8 @@ namespace AlicizaX.Event.SourceGenerators
 
         private static bool IsOpenGeneric(INamedTypeSymbol symbol)
         {
-            return symbol.IsGenericType && symbol.TypeArguments.Any(argument => argument.TypeKind == TypeKind.TypeParameter);
+            return symbol.IsGenericType && symbol.TypeArguments.Any(argument => argument.TypeKind == TypeKind.TypeParameter) ||
+                   symbol.ContainingType != null && IsOpenGeneric(symbol.ContainingType);
         }
 
         private static void Emit(GeneratorExecutionContext context, Compilation compilation, List<EventScanResult> results)
@@ -223,11 +193,13 @@ namespace AlicizaX.Event.SourceGenerators
                 if (result.IsPayload && result.IsEmpty)
                 {
                     context.ReportDiagnostic(Diagnostic.Create(DualEventKind, Location.None, result.DisplayName));
+                    continue;
                 }
 
                 if (result.IsEmpty && result.HasInstanceFields)
                 {
                     context.ReportDiagnostic(Diagnostic.Create(EmptyEventHasFields, Location.None, result.DisplayName));
+                    continue;
                 }
 
                 if (!result.HasPrewarm)
@@ -286,6 +258,8 @@ namespace AlicizaX.Event.SourceGenerators
             foreach (EventScanResult item in items.OrderBy(result => result.FullyQualifiedName))
             {
                 sb.Append("            EventInitialSize<").Append(item.FullyQualifiedName).Append(">.Size = ").Append(item.Capacity).AppendLine(";");
+                sb.Append("            EventBus.Reserve").Append(item.IsEmpty ? "Empty" : "Payload")
+                    .Append("Capacity<").Append(item.FullyQualifiedName).Append(">(").Append(item.Capacity).AppendLine(");");
             }
 
             sb.AppendLine("        }");
@@ -308,6 +282,43 @@ namespace AlicizaX.Event.SourceGenerators
                 sb.Insert(0, '_');
             }
 
+            return sb.ToString();
+        }
+
+        private static string GeneratePublish()
+        {
+            const string template = @"
+        public static void Publish<T>($parameter$) where T : struct, $contract$
+        {
+            int count = EventContainer<T, $handler$>.BeginPublish(out var callbacks);
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    $handler$ callback = callbacks[i];
+                    if (callback == null) continue;
+                    try
+                    {
+                        callback($argument$);
+                    }
+                    catch (System.Exception exception)
+                    {
+                        EventContainer<T, $handler$>.RecordHandlerException(exception);
+                    }
+                }
+            }
+            finally
+            {
+                EventContainer<T, $handler$>.EndPublish();
+            }
+        }
+";
+            var sb = new StringBuilder("namespace AlicizaX\n{\n    public static partial class EventBus\n    {\n");
+            sb.Append(template.Replace("$parameter$", "").Replace("$contract$", "IEmptyEventArgs")
+                .Replace("$handler$", "System.Action").Replace("$argument$", ""));
+            sb.Append(template.Replace("$parameter$", "in T payload").Replace("$contract$", "IPayloadEventArgs")
+                .Replace("$handler$", "InEventHandler<T>").Replace("$argument$", "in payload"));
+            sb.AppendLine("    }\n}");
             return sb.ToString();
         }
 
