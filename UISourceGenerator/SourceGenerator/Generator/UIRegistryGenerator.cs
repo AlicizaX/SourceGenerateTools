@@ -25,6 +25,7 @@ public sealed class UIRegistryGenerator : ISourceGenerator
         var allLayer = (IFieldSymbol)layerType.GetMembers("All").Single();
         var resources = new List<string>();
         var views = new List<string>();
+        var constructed = new List<string>();
         foreach (var type in GeneratorSupport.Candidates(context))
         {
             if (DerivesFrom(type, holder))
@@ -34,9 +35,11 @@ public sealed class UIRegistryGenerator : ISourceGenerator
                 continue;
             }
             string? view = BuildViewLine(context, type, window, widget, windowAttribute, updateAttribute, defaultLayer, allLayer);
-            if (view != null) views.Add(view);
+            if (view == null) continue;
+            views.Add(view);
+            constructed.Add(GeneratorSupport.Name(type));
         }
-        GeneratorSupport.Emit(context, resources.Concat(views));
+        GeneratorSupport.Emit(context, resources.Concat(views), constructed);
     }
 
     private static bool DerivesFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)
@@ -66,7 +69,7 @@ public sealed class UIRegistryGenerator : ISourceGenerator
         if (actualBase == null || !GeneratorSupport.CanReference(context, type)) return null;
         var holder = actualBase.TypeArguments[0] as INamedTypeSymbol;
         if (holder == null || !GeneratorSupport.CanReference(context, holder)) return null;
-        if (!GeneratorSupport.HasAccessibleDefaultConstructor(context, type)) return null;
+        if (!GeneratorSupport.HasPublicDefaultConstructor(context, type)) return null;
         bool isWindow = SymbolEqualityComparer.Default.Equals(actualBase.OriginalDefinition, window);
         var attribute = isWindow ? GeneratorSupport.Attribute(type, windowAttribute) : null;
         int layer = Convert.ToInt32(attribute?.ConstructorArguments[0].Value ?? defaultLayer.ConstantValue, CultureInfo.InvariantCulture);
@@ -78,6 +81,6 @@ public sealed class UIRegistryGenerator : ISourceGenerator
         int cache = attribute == null ? 0 : Convert.ToInt32(attribute.ConstructorArguments[1].Value, CultureInfo.InvariantCulture);
         bool update = GeneratorSupport.Attribute(type, updateAttribute) != null;
         string name = GeneratorSupport.Name(type);
-        return $"UIMetaRegistry.Register(typeof({name}), typeof({GeneratorSupport.Name(holder)}), (UILayer){layer.ToString(CultureInfo.InvariantCulture)}, {cache.ToString(CultureInfo.InvariantCulture)}, {(update ? "true" : "false")}, static () => new {name}());";
+        return $"UIMetaRegistry.Register(typeof({name}), typeof({GeneratorSupport.Name(holder)}), (UILayer){layer.ToString(CultureInfo.InvariantCulture)}, {cache.ToString(CultureInfo.InvariantCulture)}, {(update ? "true" : "false")});";
     }
 }
