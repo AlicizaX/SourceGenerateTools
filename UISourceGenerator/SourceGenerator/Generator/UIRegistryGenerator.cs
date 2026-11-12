@@ -1,52 +1,66 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
+/// <summary>
+/// Registers every UI view and Holder resource of the assembly at startup. Everything the runtime needs is decided here,
+/// at compile time: the factory that constructs the view, window or widget, layer and cache time, and whether the view
+/// overrides OnUpdate.
+/// </summary>
 [Generator]
 public sealed class UIRegistryGenerator : ISourceGenerator
 {
-    public void Initialize(GeneratorInitializationContext context) =>
-        context.RegisterForSyntaxNotifications(() => new GeneratorSupport.Receiver());
+    public void Initialize(GeneratorInitializationContext context)
+    {
+    }
 
     public void Execute(GeneratorExecutionContext context)
     {
-        var window = context.Compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIWindow`1");
-        var widget = context.Compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIWidget`1");
-        var holder = context.Compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIHolderObjectBase");
-        var windowAttribute = context.Compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.WindowAttribute");
-        var updateAttribute = context.Compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIUpdateAttribute");
-        var resourceAttribute = context.Compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIResAttribute");
-        var layerType = context.Compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UILayer");
-        if (window == null || widget == null || holder == null || layerType == null) return;
-        var defaultLayer = (IFieldSymbol)layerType.GetMembers("UI").Single();
-        var allLayer = (IFieldSymbol)layerType.GetMembers("All").Single();
+        Compilation compilation = context.Compilation;
+        var view = compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIBase");
+        var window = compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIWindow`1");
+        var widget = compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIWidget`1");
+        var holder = compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIHolderObjectBase");
+        if (view == null || window == null || widget == null || holder == null) return;
+        var windowAttribute = compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.WindowAttribute");
+        var resourceAttribute = compilation.GetTypeByMetadataName("AlicizaX.UI.Runtime.UIResAttribute");
+
+        var classes = new List<INamedTypeSymbol>();
+        GeneratorSupport.CollectClasses(compilation.Assembly.GlobalNamespace, classes);
         var resources = new List<string>();
         var views = new List<string>();
-        var constructed = new List<string>();
-        foreach (var type in GeneratorSupport.Candidates(context))
+        foreach (INamedTypeSymbol type in classes)
         {
-            if (DerivesFrom(type, holder))
+            context.CancellationToken.ThrowIfCancellationRequested();
+            // Walk up to the framework base: a Holder, or the constructed UIWindow<>/UIWidget<> whose argument is the Holder type.
+            for (INamedTypeSymbol? baseType = type.BaseType; baseType != null; baseType = baseType.BaseType)
             {
-                string? resource = BuildResourceLine(context, type, resourceAttribute);
-                if (resource != null) resources.Add(resource);
-                continue;
+                if (Same(baseType, holder))
+                {
+                    AddLine(resources, BuildResourceLine(context, type, resourceAttribute));
+                    break;
+                }
+                bool isWindow = Same(baseType.OriginalDefinition, window);
+                if (!isWindow && !Same(baseType.OriginalDefinition, widget)) continue;
+                AddLine(views, BuildViewLine(context, type, baseType, isWindow, view, windowAttribute));
+                break;
             }
-            string? view = BuildViewLine(context, type, window, widget, windowAttribute, updateAttribute, defaultLayer, allLayer);
-            if (view == null) continue;
-            views.Add(view);
-            constructed.Add(GeneratorSupport.Name(type));
         }
-        GeneratorSupport.Emit(context, resources.Concat(views), constructed);
+
+        // Holder resources first, then views; ordinal order keeps the output stable between compilations.
+        resources.Sort(StringComparer.Ordinal);
+        views.Sort(StringComparer.Ordinal);
+        resources.AddRange(views);
+        GeneratorSupport.Emit(context, resources);
     }
 
-    private static bool DerivesFrom(INamedTypeSymbol type, INamedTypeSymbol baseType)
+    private static bool Same(ISymbol left, ISymbol right) => SymbolEqualityComparer.Default.Equals(left, right);
+
+    private static void AddLine(List<string> lines, string? line)
     {
-        for (INamedTypeSymbol? current = type.BaseType; current != null; current = current.BaseType)
-            if (SymbolEqualityComparer.Default.Equals(current, baseType)) return true;
-        return false;
+        if (line != null) lines.Add(line);
     }
 
     private static string? BuildResourceLine(GeneratorExecutionContext context, INamedTypeSymbol type, INamedTypeSymbol? resourceAttribute)
@@ -54,33 +68,34 @@ public sealed class UIRegistryGenerator : ISourceGenerator
         var attribute = GeneratorSupport.Attribute(type, resourceAttribute);
         if (attribute == null || !GeneratorSupport.CanReference(context, type)) return null;
         string location = SymbolDisplay.FormatLiteral((string?)attribute.ConstructorArguments[0].Value ?? string.Empty, true);
-        string loadType = Convert.ToInt32(attribute.ConstructorArguments[1].Value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
-        return $"UIResRegistry.Register(typeof({GeneratorSupport.Name(type)}), {location}, (EUIResLoadType){loadType});";
+        return $"UIResRegistry.Register(typeof({GeneratorSupport.Name(type)}), {location}, (EUIResLoadType){Integer(attribute.ConstructorArguments[1])});";
     }
 
-    private static string? BuildViewLine(GeneratorExecutionContext context, INamedTypeSymbol type,
-        INamedTypeSymbol window, INamedTypeSymbol widget, INamedTypeSymbol? windowAttribute, INamedTypeSymbol? updateAttribute,
-        IFieldSymbol defaultLayer, IFieldSymbol allLayer)
+    private static string? BuildViewLine(GeneratorExecutionContext context, INamedTypeSymbol type, INamedTypeSymbol frameworkBase,
+        bool isWindow, INamedTypeSymbol view, INamedTypeSymbol? windowAttribute)
     {
-        // Resolve the constructed framework base, not an arbitrary intermediate Holder argument.
-        INamedTypeSymbol? actualBase = type.BaseType;
-        while (actualBase != null && !SymbolEqualityComparer.Default.Equals(actualBase.OriginalDefinition, window)
-            && !SymbolEqualityComparer.Default.Equals(actualBase.OriginalDefinition, widget)) actualBase = actualBase.BaseType;
-        if (actualBase == null || !GeneratorSupport.CanReference(context, type)) return null;
-        var holder = actualBase.TypeArguments[0] as INamedTypeSymbol;
-        if (holder == null || !GeneratorSupport.CanReference(context, holder)) return null;
-        if (!GeneratorSupport.HasPublicDefaultConstructor(context, type)) return null;
-        bool isWindow = SymbolEqualityComparer.Default.Equals(actualBase.OriginalDefinition, window);
-        var attribute = isWindow ? GeneratorSupport.Attribute(type, windowAttribute) : null;
-        int layer = Convert.ToInt32(attribute?.ConstructorArguments[0].Value ?? defaultLayer.ConstantValue, CultureInfo.InvariantCulture);
-        if (layer == Convert.ToInt32(allLayer.ConstantValue, CultureInfo.InvariantCulture))
-        {
-            GeneratorSupport.ReportInvalidLayer(context, type, attribute!);
-            return null;
-        }
-        int cache = attribute == null ? 0 : Convert.ToInt32(attribute.ConstructorArguments[1].Value, CultureInfo.InvariantCulture);
-        bool update = GeneratorSupport.Attribute(type, updateAttribute) != null;
+        if (!GeneratorSupport.CanReference(context, type)) return null;
+        if (!(frameworkBase.TypeArguments[0] is INamedTypeSymbol holder) || !GeneratorSupport.CanReference(context, holder)) return null;
+        if (!GeneratorSupport.HasAccessibleConstructor(context, type)) return null;
         string name = GeneratorSupport.Name(type);
-        return $"UIMetaRegistry.Register(typeof({name}), typeof({GeneratorSupport.Name(holder)}), (UILayer){layer.ToString(CultureInfo.InvariantCulture)}, {cache.ToString(CultureInfo.InvariantCulture)}, {(update ? "true" : "false")});";
+        string types = $"<{name}, {GeneratorSupport.Name(holder)}>(() => new {name}(), ";
+        string update = OverridesUpdate(type, view) ? "true" : "false";
+        if (!isWindow) return $"UIMetaRegistry.RegisterWidget{types}{update});";
+        var attribute = GeneratorSupport.Attribute(type, windowAttribute);
+        string layer = attribute == null ? "UILayer.UI" : "(UILayer)" + Integer(attribute.ConstructorArguments[0]);
+        string cache = attribute == null ? "UICacheTime.None" : Integer(attribute.ConstructorArguments[1]);
+        return $"UIMetaRegistry.RegisterWindow{types}{layer}, {cache}, {update});";
     }
+
+    /// <summary>A view takes part in the Update loop exactly when it, or a base class below UIBase, overrides OnUpdate.</summary>
+    private static bool OverridesUpdate(INamedTypeSymbol type, INamedTypeSymbol view)
+    {
+        for (INamedTypeSymbol? current = type; current != null && !Same(current, view); current = current.BaseType)
+            foreach (ISymbol member in current.GetMembers("OnUpdate"))
+                if (member is IMethodSymbol { IsOverride: true }) return true;
+        return false;
+    }
+
+    private static string Integer(TypedConstant constant) =>
+        Convert.ToInt32(constant.Value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
 }

@@ -1,9 +1,7 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 
 internal static class GeneratorSupport
@@ -15,34 +13,23 @@ internal static class GeneratorSupport
         "UI003", "Type requires reflection registration", "Type {0} cannot be referenced by the generated registry; reflection registration will be used",
         "TypeSafety", DiagnosticSeverity.Warning, true);
     private static readonly DiagnosticDescriptor MissingConstructor = new DiagnosticDescriptor(
-        "UI004", "Missing public default constructor", "Type {0} requires a public parameterless constructor: UIService creates views through it",
-        "TypeSafety", DiagnosticSeverity.Error, true);
-    private static readonly DiagnosticDescriptor InvalidLayer = new DiagnosticDescriptor(
-        "UI005", "Invalid window layer", "Type {0} cannot use UILayer.All as its window layer",
+        "UI004", "Missing accessible default constructor", "Type {0} requires a parameterless constructor the generated registry can call: views are created through it",
         "TypeSafety", DiagnosticSeverity.Error, true);
 
-    internal sealed class Receiver : ISyntaxReceiver
+    /// <summary>Collects every non-abstract class declared in this assembly, nested ones included, straight from the symbol table.</summary>
+    internal static void CollectClasses(INamespaceOrTypeSymbol scope, List<INamedTypeSymbol> classes)
     {
-        internal readonly List<ClassDeclarationSyntax> Candidates = new List<ClassDeclarationSyntax>();
-        public void OnVisitSyntaxNode(SyntaxNode node)
+        foreach (INamedTypeSymbol type in scope.GetTypeMembers())
         {
-            if (node is ClassDeclarationSyntax declaration && declaration.BaseList != null) Candidates.Add(declaration);
+            if (type.TypeKind == TypeKind.Class && !type.IsAbstract) classes.Add(type);
+            CollectClasses(type, classes);
         }
-    }
-
-    internal static IEnumerable<INamedTypeSymbol> Candidates(GeneratorExecutionContext context)
-    {
-        var unique = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
-        foreach (var declaration in ((Receiver)context.SyntaxReceiver!).Candidates)
-        {
-            context.CancellationToken.ThrowIfCancellationRequested();
-            var symbol = context.Compilation.GetSemanticModel(declaration.SyntaxTree).GetDeclaredSymbol(declaration);
-            if (symbol != null && !symbol.IsAbstract) unique.Add(symbol);
-        }
-        return unique.Cast<INamedTypeSymbol>().OrderBy(Name, StringComparer.Ordinal);
+        if (scope is INamespaceSymbol space)
+            foreach (INamespaceSymbol child in space.GetNamespaceMembers()) CollectClasses(child, classes);
     }
 
     internal static string Name(ITypeSymbol type) => type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
     internal static AttributeData? Attribute(INamedTypeSymbol type, INamedTypeSymbol? attribute) =>
         type.GetAttributes().FirstOrDefault(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute));
 
@@ -61,17 +48,13 @@ internal static class GeneratorSupport
         return true;
     }
 
-    internal static bool HasPublicDefaultConstructor(GeneratorExecutionContext context, INamedTypeSymbol type)
+    internal static bool HasAccessibleConstructor(GeneratorExecutionContext context, INamedTypeSymbol type)
     {
-        if (type.InstanceConstructors.Any(c => c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public))
+        if (type.InstanceConstructors.Any(c => c.Parameters.Length == 0 && context.Compilation.IsSymbolAccessibleWithin(c, context.Compilation.Assembly)))
             return true;
         context.ReportDiagnostic(Diagnostic.Create(MissingConstructor, type.Locations.FirstOrDefault(), Name(type)));
         return false;
     }
-
-    internal static void ReportInvalidLayer(GeneratorExecutionContext context, INamedTypeSymbol type, AttributeData attribute) =>
-        context.ReportDiagnostic(Diagnostic.Create(InvalidLayer,
-            attribute.ApplicationSyntaxReference?.GetSyntax(context.CancellationToken).GetLocation() ?? type.Locations.FirstOrDefault(), Name(type)));
 
     private static bool ContainsParameter(ITypeSymbol type)
     {
@@ -82,23 +65,13 @@ internal static class GeneratorSupport
         return false;
     }
 
-    /// <param name="constructedTypes">Views created through reflection at runtime; their constructors are rooted for the IL2CPP linker.</param>
-    internal static void Emit(GeneratorExecutionContext context, IEnumerable<string> registrations, IReadOnlyList<string> constructedTypes)
+    internal static void Emit(GeneratorExecutionContext context, IReadOnlyCollection<string> registrations)
     {
-        var lines = registrations.ToArray();
-        if (lines.Length == 0) return;
+        if (registrations.Count == 0) return;
         var source = new StringBuilder("// <auto-generated/>\nnamespace AlicizaX.UI.Runtime\n{\n    internal static class UIGeneratedRegistry\n    {\n");
         source.Append("#if UNITY_EDITOR\n        [UnityEditor.InitializeOnEnterPlayMode]\n#else\n        [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.BeforeSceneLoad)]\n#endif\n        internal static void RegisterAll()\n        {\n");
-        foreach (string line in lines) source.Append("            ").Append(line).Append('\n');
-        source.Append("        }\n");
-        if (constructedTypes.Count > 0)
-        {
-            source.Append("\n        // Linker root, never called: views are created through reflection, so IL2CPP stripping must keep their constructors.\n");
-            source.Append("        [UnityEngine.Scripting.Preserve]\n        private static void PreserveConstructors()\n        {\n");
-            foreach (string type in constructedTypes) source.Append("            _ = new ").Append(type).Append("();\n");
-            source.Append("        }\n");
-        }
-        source.Append("    }\n}\n");
+        foreach (string line in registrations) source.Append("            ").Append(line).Append('\n');
+        source.Append("        }\n    }\n}\n");
         context.AddSource("UIGeneratedRegistry.g.cs", SourceText.From(source.ToString(), Encoding.UTF8));
     }
 }
